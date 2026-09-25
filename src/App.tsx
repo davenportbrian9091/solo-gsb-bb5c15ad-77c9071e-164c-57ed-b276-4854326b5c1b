@@ -184,7 +184,7 @@ export default function App() {
   const mutedBufferRef = useRef<AudioBuffer | null>(null);
   const [auditioning, setAuditioning] = useState(false);
   /** 停止试听并切回原始缓冲（供载入新音频等场景复用） */
-  const stopAuditionRef = useRef<(restoreOriginal?: boolean) => void>(() => {});
+  const stopAuditionRef = useRef<() => void>(() => {});
 
   // ---- 重复录制定位：以选中章节为样本在整段录音中查找重复片段 ----
   const [repeatHits, setRepeatHits] = useState<RepeatHit[] | null>(null);
@@ -402,8 +402,10 @@ export default function App() {
         if (token !== loadTokenRef.current) return; // 已被更新的选择取代
         resetChapters();
         previewRef.current = null;
-        // 载入新音频：清空消音标记与处理结果（标记是按旧缓冲记录的，不跨文件保留）
-        stopAuditionRef.current?.(false);
+        // 载入新音频：停止可能进行中的处理后试听并把播放缓冲切回原声
+        // （engine.decode 已重置播放源，这里在 App 层再明确一次归属），
+        // 随后清空消音标记与处理结果（标记是按旧缓冲记录的，不跨文件保留）
+        stopAuditionRef.current?.();
         mutedPcmRef.current = null;
         mutedFromRegionsRef.current = null;
         mutedBufferRef.current = null;
@@ -584,16 +586,17 @@ export default function App() {
     [transcript, chapters],
   );
 
-  /** 停止试听并切回原始缓冲；restoreOriginal=false 时只停声、不切缓冲（载入新文件场景）。 */
-  const stopAudition = useCallback(
-    (restoreOriginal = true) => {
-      engine.stop();
-      if (restoreOriginal) engine.setPlaybackBuffer(null);
-      setAuditioning(false);
-      setClickAuditioning(false);
-    },
-    [engine],
-  );
+  /**
+   * 停止一切试听并切回原始缓冲：停止发声、播放缓冲归还给已解码原声，
+   * 两类试听标志同时清零。主播放 / 章节预览 / 逐处试听 / 换文件等所有
+   * 「离开处理后缓冲」的入口都经由这里，归属切换只有这一条路径。
+   */
+  const stopAudition = useCallback(() => {
+    engine.stop();
+    engine.setPlaybackBuffer(null);
+    setAuditioning(false);
+    setClickAuditioning(false);
+  }, [engine]);
   stopAuditionRef.current = stopAudition;
 
   const seek = useCallback(
@@ -617,8 +620,9 @@ export default function App() {
   const togglePlay = useCallback(() => {
     if (!engine.hasBuffer) return;
     previewRef.current = null;
-    if (auditioning) {
-      // 试听中按主播放键：停止试听并切回原始音频，从当前位置播放
+    if (auditioning || clickAuditioning) {
+      // 任一类处理后试听（消音 / 爆音修复）中按主播放键：停止试听、
+      // 播放缓冲切回原始音频，从当前位置继续播放原声（播放位置保留）
       const t = engine.getTime();
       stopAudition();
       engine.play(t);
@@ -631,10 +635,12 @@ export default function App() {
       setPlayhead(t);
       setPlaying(false);
     } else {
+      // 主播放永远播放原始缓冲：明确归还播放源，绝不沿用处理后缓冲
+      engine.setPlaybackBuffer(null);
       engine.play(playhead >= duration - 0.05 ? 0 : playhead);
       setPlaying(true);
     }
-  }, [engine, playhead, duration, auditioning, stopAudition]);
+  }, [engine, playhead, duration, auditioning, clickAuditioning, stopAudition]);
 
   /**
    * Preview a chapter interval. When fades are enabled for the chapter, the
@@ -836,15 +842,16 @@ export default function App() {
 
   /** 试听处理后的完整音频（与下载同源）；再点一次停止。 */
   const toggleAudition = useCallback(() => {
-    if (!mutedBufferRef.current) return;
+    const buf = mutedBufferRef.current;
+    if (!buf) return;
     if (auditioning) {
       stopAudition();
       return;
     }
+    stopAudition(); // 停掉进行中的播放 / 爆音试听并切回原始缓冲
     previewRef.current = null;
-    setClickAuditioning(false); // 爆音修复试听若在进行，随缓冲切换一并结束
-    engine.setPlaybackBuffer(mutedBufferRef.current);
-    const from = playhead >= mutedBufferRef.current.duration - 0.05 ? 0 : playhead;
+    engine.setPlaybackBuffer(buf); // 试听开始：处理后缓冲接管播放源
+    const from = playhead >= buf.duration - 0.05 ? 0 : playhead;
     setPlayhead(from);
     engine.play(from);
     setPlaying(true);
@@ -996,9 +1003,9 @@ export default function App() {
       stopAudition();
       return;
     }
-    stopAudition(); // 停掉进行中的播放 / 其他试听并切回原始缓冲
+    stopAudition(); // 停掉进行中的播放 / 消音试听并切回原始缓冲
     previewRef.current = null;
-    engine.setPlaybackBuffer(buf);
+    engine.setPlaybackBuffer(buf); // 试听开始：修复后缓冲接管播放源
     const from = playhead >= buf.duration - 0.05 ? 0 : playhead;
     setPlayhead(from);
     engine.play(from);

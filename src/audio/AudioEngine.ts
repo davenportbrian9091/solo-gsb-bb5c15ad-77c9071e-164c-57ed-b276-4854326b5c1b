@@ -56,6 +56,12 @@ export class AudioEngine {
     if (seq !== this.decodeSeq) throw new StaleDecodeError();
     this.stop();
     this.buffer = decoded;
+    // 文件切换：新解码的缓冲唯一接管播放源。可能残留的处理后试听缓冲
+    // （消音 / 爆音修复）在此一并丢弃，播放位置归零——此后主播放、章节
+    // 预览与逐处试听一律播放新文件的原声。旧解码在上面的 seq 检查处已
+    // 被拒绝，走不到这里，因此永远无法夺回播放源。
+    this.playbackBuffer = null;
+    this.offset = 0;
     return this.buffer;
   }
 
