@@ -184,7 +184,7 @@ export default function App() {
   const mutedBufferRef = useRef<AudioBuffer | null>(null);
   const [auditioning, setAuditioning] = useState(false);
   /** 停止试听并切回原始缓冲（供载入新音频等场景复用） */
-  const stopAuditionRef = useRef<(restoreOriginal?: boolean) => void>(() => {});
+  const stopAuditionRef = useRef<() => void>(() => {});
 
   // ---- 重复录制定位：以选中章节为样本在整段录音中查找重复片段 ----
   const [repeatHits, setRepeatHits] = useState<RepeatHit[] | null>(null);
@@ -402,8 +402,10 @@ export default function App() {
         if (token !== loadTokenRef.current) return; // 已被更新的选择取代
         resetChapters();
         previewRef.current = null;
+        // 载入新音频：停止试听并把播放源归属切回新文件的原始缓冲
+        //（decode 已重置 engine 的播放缓冲，这里同步界面试听状态）
+        stopAuditionRef.current?.();
         // 载入新音频：清空消音标记与处理结果（标记是按旧缓冲记录的，不跨文件保留）
-        stopAuditionRef.current?.(false);
         mutedPcmRef.current = null;
         mutedFromRegionsRef.current = null;
         mutedBufferRef.current = null;
@@ -584,16 +586,13 @@ export default function App() {
     [transcript, chapters],
   );
 
-  /** 停止试听并切回原始缓冲；restoreOriginal=false 时只停声、不切缓冲（载入新文件场景）。 */
-  const stopAudition = useCallback(
-    (restoreOriginal = true) => {
-      engine.stop();
-      if (restoreOriginal) engine.setPlaybackBuffer(null);
-      setAuditioning(false);
-      setClickAuditioning(false);
-    },
-    [engine],
-  );
+  /** 停止试听并切回原始缓冲（开始主播放 / 预览、载入新音频等场景复用）。 */
+  const stopAudition = useCallback(() => {
+    engine.stop();
+    engine.setPlaybackBuffer(null);
+    setAuditioning(false);
+    setClickAuditioning(false);
+  }, [engine]);
   stopAuditionRef.current = stopAudition;
 
   const seek = useCallback(
@@ -617,8 +616,9 @@ export default function App() {
   const togglePlay = useCallback(() => {
     if (!engine.hasBuffer) return;
     previewRef.current = null;
-    if (auditioning) {
-      // 试听中按主播放键：停止试听并切回原始音频，从当前位置播放
+    if (auditioning || clickAuditioning) {
+      // 试听（消音 / 爆音修复）中按主播放键：停止试听并切回原始音频，
+      // 从当前位置继续播放原声（处理结果与原音频等长，播放位置直接保留）
       const t = engine.getTime();
       stopAudition();
       engine.play(t);
@@ -634,7 +634,7 @@ export default function App() {
       engine.play(playhead >= duration - 0.05 ? 0 : playhead);
       setPlaying(true);
     }
-  }, [engine, playhead, duration, auditioning, stopAudition]);
+  }, [engine, playhead, duration, auditioning, clickAuditioning, stopAudition]);
 
   /**
    * Preview a chapter interval. When fades are enabled for the chapter, the

@@ -26,7 +26,12 @@ export class AudioEngine {
   private startedAt = 0;
   /** buffer offset at which playback started */
   private offset = 0;
-  /** buffer currently being played (defaults to the decoded source buffer) */
+  /**
+   * buffer currently being played (defaults to the decoded source buffer).
+   * Ownership is explicit: auditioning a processed result sets this, leaving
+   * the audition (or any main-playback / preview action) clears it, and every
+   * successful decode() resets it so the newest file always owns playback.
+   */
   private playbackBuffer: AudioBuffer | null = null;
   private stopAt: number | null = null;
   private stopTimer: number | null = null;
@@ -56,6 +61,11 @@ export class AudioEngine {
     if (seq !== this.decodeSeq) throw new StaleDecodeError();
     this.stop();
     this.buffer = decoded;
+    // The newest file takes over the playback source: any processed
+    // (muted / click-repaired) audition buffer belonged to the previous
+    // file and must never be played against the new file's waveform and
+    // chapters. Superseded decodes throw above and never reach this line.
+    this.playbackBuffer = null;
     return this.buffer;
   }
 
